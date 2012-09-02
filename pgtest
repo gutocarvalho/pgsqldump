@@ -1,0 +1,73 @@
+#!/bin/bash
+
+#### variaveis/constantes ###########################################################
+
+BDIR="/path/diretorio/pgsqldump"
+
+DBLIST="$BDIR/pglist.txt"
+
+BE="postgres|template1|template0|\?"       # bancos que nao vao entrar no backup
+
+PG_DUMP=$(which pg_dump)         # caminho para comando pgsqldump
+PSQL=$(which psql)               # caminho para o comando pgdump
+MAILX=$(which mail)                   # caminho para comando mail
+
+SEND_ERROR_MAIL="YES"                           # envia email com relatorio de erros nos dumps YES/NO
+ERROR_MAIL="conta@provedor.com.br"         # email para receber relatorios de erro
+
+### verificando se voce é o usuario root ###################################
+
+if [ $(id -u) != "0" ];then
+        echo -e "\nErro: este script precisa ser executado com usuario root..."
+        echo -e "Ajuda: torne-se root, use o comando (su -) ou (sudo -i).\n"
+        exit 1
+fi
+
+### verifica se as ferramentas do pgsql estao instalados ####################################
+
+if [ ! -x $PG_DUMP ];then
+        echo -e "\nErro: Este script não conseguiu encontrar o comando pg_dump"
+        echo -e "Ajuda: Corrija o caminho na variavel PG_DUMP\n"
+        exit 1
+fi
+
+if [ ! -x $PSQL ];then
+        echo -e "\nErro: Este script não conseguiu encontrar o comando psql"
+        echo -e "Ajuda: Corrija o caminho na variavel PGSQL\n"
+        exit 1
+fi
+
+### verificando se existe o arquivo com a lista de sgbds #############################
+
+        if [ ! -f $DBLIST ]; then
+                echo -e "\nErro: o arquivo com a lista de sgbds nao existe!"
+                echo -e "Ajuda: ajuste o conteudo da variavel DBLIST\n"
+                exit 1
+        fi
+
+### funcao de backup ##########################################################
+
+function teste() 
+	{
+
+        echo "Buscando informacoes de conexao nos sgbd's no arquivo $DBLIST ..."
+ 
+	# pegando infos no arquivo com lista de bancos
+	for DB in `cat $DBLIST |grep -v ^#|grep -v ^$`;do
+		HOST=`echo $DB | cut -d: -f1`
+                USER=`echo $DB | cut -d: -f2`
+                PASS=`echo $DB | cut -d: -f3`
+                NAME=`echo $DB | cut -d: -f4`
+
+		# exportando senha do postgres
+		export PGPASSWORD=$PASS
+
+		# laco para buscar info de bancos
+		for DBBKP in $($PSQL --username=$USER -h $HOST -l -t -A | cut -d\| -f1 | grep -v = |egrep -v $BE); do
+			echo -e "\nservidor [ $HOST ] hostname [ $NAME ] banco [ $DBBKP ] acesso com usuario [ $USER ] \n"
+		done
+
+        done
+}
+
+teste

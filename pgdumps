@@ -1,0 +1,219 @@
+#!/bin/bash
+
+#
+# SCRIPT para fazer dump dos bancos de dados do PGSQL
+# Ele faz dump banco a banco e envia relatorio por e-mail
+#
+
+#
+# autor: guto@gutocarvalho.net
+#
+
+# pre-requisitos de pacotes:
+#
+# psql
+# pg_dump
+# bzip2
+# mail
+#
+
+#
+# como usar?
+# configure as variaveis/constantes internas e execute-o
+# ./pgdumps
+#
+ 
+#### variaveis/constantes ###########################################################
+
+BDIR="/caminho/para/pgsqldumps"		# diretorio base
+
+DBLIST="$BDIR/pglist.txt"			# lista de bancos para dump
+
+BK="$BDIR/dumps"   				# diretorio de destino dos dumps
+BL="$BDIR/logs"            			# diretorio de destino dos logs
+
+NB="14"          				# numero maximo de backups de um mesmo banco no disco
+
+BE="postgres|template1|template0|\?"    	# bancos que nao vao entrar no backup
+
+NW=$(date +%Y%m%d.%H%M%S)               	# variavel de hora para os logs da rotina
+LN="$BL/postgresql.dumps.$NW.log"            	# formato do arquivo de log
+LR="$BL/postgresql.dumps.errors.$NW.log"        # formato do arquivo de log
+
+PG_DUMP=$(which pg_dump)         		# caminho para comando pgsqldump
+PSQL=$(which psql)               		# caminho para o comando pgdump
+MAILX=$(which mail)                   		# caminho para comando mail
+
+SEND_REPORT_MAIL="YES"           		# envia e-mail com relatorio de dumps YES/NO
+REPORT_MAIL="usuario@provedor.com.br"           # email para receber relatorio de dumps
+ 
+SEND_ERROR_MAIL="YES"                           # envia email com relatorio de erros nos dumps YES/NO
+ERROR_MAIL="usuario@provedor.com.br"	        # email para receber relatorios de erro
+
+
+### verificando se voce é o usuario root ###################################
+
+if [ $(id -u) != "0" ];then
+        echo -e "\nErro: este script precisa ser executado com usuario root..."
+        echo -e "Ajuda: torne-se root, use o comando (su -) ou (sudo -i).\n"
+        exit 1
+fi
+
+### verifica se as ferramentas do pgsql estao instalados ####################################
+
+if [ ! -x $PG_DUMP ];then
+        echo -e "\nErro: Este script não conseguiu encontrar o comando pg_dump"
+        echo -e "Ajuda: Corrija o caminho na variavel PG_DUMP\n"
+        exit 1
+fi
+
+if [ ! -x $PSQL ];then
+        echo -e "\nErro: Este script não conseguiu encontrar o comando psql"
+        echo -e "Ajuda: Corrija o caminho na variavel PGSQL\n"
+        exit 1
+fi
+
+### verifica se o mailx esta instalado ####################################
+
+if [ ! -x $_mail ];then
+        echo "Erro: Este script não conseguiu encontrar o comando mail"
+        echo "Ajuda: Corrija o caminho na variavel _mail"
+        exit 1
+fi
+
+### verificando se existe o diretorio para armazenar os logs #############################
+        
+        if [ ! -d $BL ]; then
+                echo -e "\nErro: o diretorio de logs nao existe!"
+                echo -e "Ajuda: ajuste o conteudo da variavel BL\n"
+                exit 1
+        fi
+
+### verificando se existe o diretorio para armazenar os dumps #############################
+
+        if [ ! -d $BK ]; then
+                echo -e "\nErro: o diretorio de destino nao existe!"
+                echo -e "Ajuda: ajuste o conteudo da variavel BK\n"
+                exit 1
+        fi
+
+### verificando se existe o arquivo com a lista de sgbds #############################
+
+        if [ ! -f $DBLIST ]; then
+                echo -e "\nErro: o arquivo com a lista de sgbds nao existe!"
+                echo -e "Ajuda: ajuste o conteudo da variavel DBLIST\n"
+                exit 1
+        fi
+
+### funcao de backup ##########################################################
+
+function backup() 
+	{
+
+        echo -e "\nIniciando rotina de dump de bancos postgresql... $(date +%Y%m%d.%H%M%S)\n" | tee -a $LN
+
+        echo "O script esta configurado para armazenar os ultimos ( $NB ) dumps..."|tee -a $LN
+        echo "O script esta ignorando os seguintes bancos: [ $BE ]"|tee -a $LN
+
+	echo -e "\nRotina sendo executado no servidor ( $HOSTNAME )" |tee -a $LN
+        echo "Os bancos estao sendo salvos em: [ $BK ]"|tee -a $LN
+        echo -e "Os logs estao sendo salvos em: [ $BL ]\n"|tee -a $LN
+
+        echo "Buscando informacoes de conexao nos sgbd's no arquivo $DBLIST ..." | tee -a $LN
+ 
+	# pegando infos no arquivo com lista de bancos
+	for DB in `cat $DBLIST |grep -v ^#|grep -v ^$`;do
+		HOST=`echo $DB | cut -d: -f1`
+                USER=`echo $DB | cut -d: -f2`
+                PASS=`echo $DB | cut -d: -f3`
+                NAME=`echo $DB | cut -d: -f4`
+
+		# exportando senha do postgres
+		export PGPASSWORD=$PASS
+
+		# laco para fazer dump dos bancos		        
+		for DBBKP in $($PSQL --username=$USER -h $HOST -l -t -A 2>> $LR | cut -d\| -f1 | grep -v = |egrep -v $BE); do
+			echo -e "\nefetuando dump do banco [ $DBBKP ] no servidor [ $HOST , $NAME ] com usuario [ $USER ] " | tee -a $LN
+			export DUMPDATE=$(date +%Y%m%d.%H%M%S)
+		        $PG_DUMP --username=$USER -h $HOST $DBBKP 2>> $LR | bzip2 -c > $BK/postgresql.$NAME.$DBBKP.$DUMPDATE.dump.bz2
+
+			# verificando se o arquivo de dump foi criado
+			if [ -f $BK/postgresql.$NAME.$DBBKP.$DUMPDATE.dump.bz2 ];then
+				SIZE=$(du -sk $BK/postgresql.$NAME.$DBBKP.$DUMPDATE.dump.bz2 |awk '{ print $1}')
+				if [ $SIZE -lt "50" ];then
+					echo "***** arquivo com dump do banco [ $DBBKP ] foi gerado e tem tamanho inferior a 50 KB por favor verifique, tamanho em KB $SIZE." | tee -a $LR
+			        else
+					echo "arquivo com dump do banco [ $DBBKP ] foi gerado, tamanho total do arquivo $SIZE." | tee -a $LN
+				fi
+			else
+				echo "arquivo de dump [ $DBBKP ] do servidor [ $HOST , $NAME ] nao foi gerado corretamente, por favor verifique." | tee -a $LN
+				exit 1
+			fi
+
+		        # rotina para limpeza de arquivos
+			if [ $(ls -1 $BK/postgresql.$NAME.$DBBKP.*|wc -l) -gt $NB ];then
+			        OLDFILE=$(ls -1 $BK/postgresql.$NAME.$DBBKP.* -r --sort=time|head -1)
+				echo "o arquivo [ $OLDFILE ] esta sendo removido, o [ banco $DBBKP ] execedeu o limite de $NB dumps no filesystem ..." | tee -a $LN
+				rm $OLDFILE
+		        else
+			        echo nao existem dumps do banco [ $DBBKP ] a serem removidos, existem menos de $NB dumps deste banco no filesystem ... |tee -a $LN
+			fi
+		done
+        done
+
+	# calculando espaço em disco usado pelos dumps
+	DUMPSTOTALDISKSIZE=$(du -sh $BK| awk '{ print $1 }')
+	echo -e "\nEspaço em disco ocupado pelos dumps é $DUMPSTOTALDISKSIZE...\n"|tee -a $LN
+ 
+	# calculando numero total de arquivos de dump
+	DUMPSTOTALFILES=$(ls $BK|wc -l)
+	echo -e "Numero total de arquivos de dump é $DUMPSTOTALFILES...\n"|tee -a $LN
+ 
+        # fim da rotina
+	echo -e "Rotina de dumps finalizanda em $(date +%Y%m%d.%H%M%S)...\n"|tee -a $LN
+
+	# verificando se houve algum erro
+        if [ -e $LR ];then
+                if [ -s $LR ];then
+                        echo -e "*** Dectectei algum erro durante o dump, por favor verifique o arquivo $LR...\n"|tee -a $LN
+                        # enviando relatorio de erro
+                        if [ $SEND_ERROR_MAIL == "YES" ];then
+                        echo -e "Enviando relatorio do erros para $ERROR_MAIL ...\n" |tee -a $LN
+                                mail -s "pgsqldump, erro detectado durante a rotina de dumps" $ERROR_MAIL < $LR
+                        fi
+		else
+			rm $LR
+                fi
+        fi
+ 
+        # relatorio do dump
+        if [ $SEND_REPORT_MAIL == "YES" ];then
+        	echo -e "Enviando relatorio de dumps para $REPORT_MAIL ...\n" |tee -a $LN
+        	$MAILX -s "pgsqldump, log de dumps de bancos" $REPORT_MAIL < $LN
+	fi
+
+
+}
+
+### case ##########################
+
+case $1 in
+	start|iniciar)
+	backup
+	;;
+	clearlogs)
+	rm -rf $BK/*
+	;;
+	cleardumps)
+	rm -rf $BL/*
+	;;
+	clearall)
+	rm -rf $BK/*
+	rm -rf $BL/*
+	;;
+	*)
+	echo "./postgresqldumps {start|clearlogs|cleardumps}"
+	exit 1
+	;;
+esac
+exit 0
